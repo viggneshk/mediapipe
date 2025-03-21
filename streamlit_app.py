@@ -7,6 +7,7 @@ import time
 import subprocess
 import json
 import numpy as np
+import shutil
 
 # Set page config
 st.set_page_config(
@@ -14,6 +15,9 @@ st.set_page_config(
     page_icon="🧍",
     layout="centered"
 )
+
+# Set environment variable to specify a writable directory for MediaPipe models
+os.environ["MEDIAPIPE_MODEL_PATH"] = tempfile.gettempdir()
 
 # Function to get accurate video dimensions using FFmpeg
 def get_video_info(video_path):
@@ -89,15 +93,28 @@ def get_dimensions_from_frame(video_path):
 # Initialize MediaPipe Pose
 @st.cache_resource
 def load_mediapipe():
-    mp_pose = mp.solutions.pose
-    pose = mp_pose.Pose(
-        static_image_mode=False,
-        model_complexity=2,  # 2 = heavy model
-        enable_segmentation=False,  # Disable segmentation to avoid the error
-        min_detection_confidence=0.5,
-        min_tracking_confidence=0.5
-    )
-    return pose, mp_pose, mp.solutions.drawing_utils, mp.solutions.drawing_styles
+    try:
+        # Create a temp dir for MediaPipe models if needed
+        model_dir = os.path.join(tempfile.gettempdir(), "mediapipe_models")
+        os.makedirs(model_dir, exist_ok=True)
+        
+        # Set environment variables for MediaPipe
+        os.environ["MEDIAPIPE_RESOURCE_DIR"] = model_dir
+        
+        # Load MediaPipe components
+        mp_pose = mp.solutions.pose
+        pose = mp_pose.Pose(
+            static_image_mode=False,
+            model_complexity=2,  # 2 = heavy model
+            enable_segmentation=False,  # Disable segmentation to avoid the error
+            min_detection_confidence=0.5,
+            min_tracking_confidence=0.5
+        )
+        return pose, mp_pose, mp.solutions.drawing_utils, mp.solutions.drawing_styles
+    except Exception as e:
+        st.error(f"Error loading MediaPipe: {e}")
+        st.info("If this error persists, please try a different video or check if MediaPipe is compatible with your system.")
+        raise e
 
 # App header
 st.title("MediaPipe Pose Landmarker")
