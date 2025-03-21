@@ -1,0 +1,30 @@
+# Virtual Environment
+venv/
+venv_py310/
+env/
+ENV/
+*.pyc
+__pycache__/
+
+# Streamlit
+.streamlit/secrets.toml
+
+# Temporary files
+.DS_Store
+*.log
+tmp/
+temp/
+
+# Media files (except for static directory structure)
+processed_*.mp4
+*.mp4
+static/uploads/*
+static/processed/*
+!static/uploads/.gitkeep
+!static/processed/.gitkeep
+
+# IDEs and editors
+.idea/
+.vscode/
+*.swp
+*.swo 

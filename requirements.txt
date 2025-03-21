@@ -1,0 +1,5 @@
+mediapipe
+flask
+opencv-python
+Werkzeug
+numpy 
