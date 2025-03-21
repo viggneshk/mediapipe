@@ -68,6 +68,14 @@ def patch_mediapipe_download():
 # Function to get accurate video dimensions using FFmpeg
 def get_video_info(video_path):
     try:
+        # Check if ffprobe is available
+        try:
+            result = subprocess.run(['ffprobe', '-version'], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            if result.returncode != 0:
+                return None, None, None
+        except:
+            return None, None, None
+            
         # Run ffprobe to get video information in JSON format
         cmd = [
             'ffprobe', 
@@ -325,6 +333,10 @@ if uploaded_file is not None:
                 # Create a black canvas of the target dimensions
                 canvas = np.zeros((orig_height, orig_width, 3), dtype=np.uint8)
                 
+                # Initialize new_w and new_h variables
+                new_w = orig_width
+                new_h = orig_height
+                
                 # If preserving source aspect ratio:
                 if preserve_source_aspect:
                     # Calculate the dimensions that preserve the original aspect ratio
@@ -377,59 +389,20 @@ if uploaded_file is not None:
             output_path = f"processed_{int(time.time())}.mp4"
             temp_output_path = os.path.join(tempfile.gettempdir(), output_path)
             
-            # Use FFmpeg to combine frames directly (since they're already at target dimensions)
-            try:
-                command = [
-                    'ffmpeg',
-                    '-y',  # Overwrite output file if it exists
-                    '-framerate', str(fps),
-                    '-i', os.path.join(frames_dir, 'frame_%06d.png'),
-                    '-c:v', 'libx264',
-                    '-pix_fmt', 'yuv420p',
-                    temp_output_path
-                ]
-                
-                process = subprocess.Popen(
-                    command, 
-                    stdout=subprocess.PIPE, 
-                    stderr=subprocess.PIPE
-                )
-                
-                stdout, stderr = process.communicate()
-                
-                if process.returncode != 0:
-                    st.error(f"FFmpeg error: {stderr.decode()}")
-                    # Fallback to OpenCV
-                    progress_text.text("FFmpeg failed, falling back to OpenCV...")
-                    out = cv2.VideoWriter(
-                        temp_output_path, 
-                        cv2.VideoWriter_fourcc(*'mp4v'), 
-                        fps, 
-                        (orig_width, orig_height)  # Use target dimensions
-                    )
-                    
-                    for frame_file in processed_frames:
-                        frame = cv2.imread(frame_file)
-                        out.write(frame)
-                    
-                    out.release()
-            except Exception as e:
-                st.error(f"Error using FFmpeg: {e}")
-                
-                # Fallback to OpenCV
-                progress_text.text("FFmpeg failed, falling back to OpenCV...")
-                out = cv2.VideoWriter(
-                    temp_output_path, 
-                    cv2.VideoWriter_fourcc(*'mp4v'), 
-                    fps, 
-                    (orig_width, orig_height)  # Use target dimensions
-                )
-                
-                for frame_file in processed_frames:
-                    frame = cv2.imread(frame_file)
-                    out.write(frame)
-                
-                out.release()
+            # Use OpenCV to create video - since ffmpeg is not available
+            progress_text.text("Combining frames into video...")
+            out = cv2.VideoWriter(
+                temp_output_path, 
+                cv2.VideoWriter_fourcc(*'mp4v'), 
+                fps, 
+                (orig_width, orig_height)
+            )
+            
+            for frame_file in processed_frames:
+                frame = cv2.imread(frame_file)
+                out.write(frame)
+            
+            out.release()
             
             # Copy to a location accessible by Streamlit
             if os.path.exists(temp_output_path):
