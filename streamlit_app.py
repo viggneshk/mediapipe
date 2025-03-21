@@ -8,6 +8,7 @@ import subprocess
 import json
 import numpy as np
 import shutil
+import sys
 
 # Set page config
 st.set_page_config(
@@ -16,8 +17,53 @@ st.set_page_config(
     layout="centered"
 )
 
-# Set environment variable to specify a writable directory for MediaPipe models
-os.environ["MEDIAPIPE_MODEL_PATH"] = tempfile.gettempdir()
+# Create a dedicated writable directory for MediaPipe
+TEMP_DIR = tempfile.gettempdir()
+MODEL_DIR = os.path.join(TEMP_DIR, "mediapipe_models")
+os.makedirs(MODEL_DIR, exist_ok=True)
+
+# Set MediaPipe environment variables
+os.environ["MEDIAPIPE_MODEL_PATH"] = MODEL_DIR
+os.environ["MEDIAPIPE_RESOURCE_DIR"] = MODEL_DIR
+os.environ["MEDIAPIPE_DISABLE_GPU"] = "1"
+
+# Monkey patch MediaPipe's download functionality to save models to our writable directory
+def patch_mediapipe_download():
+    try:
+        from mediapipe.python.solutions import download_utils
+        original_download = download_utils.download_oss_model
+        
+        def patched_download(model_path, file_name):
+            # Redirect to our writable model directory
+            custom_model_path = os.path.join(MODEL_DIR, file_name)
+            
+            try:
+                # Return early if the model already exists
+                if os.path.exists(custom_model_path):
+                    return custom_model_path
+                
+                # Create any necessary subdirectories
+                os.makedirs(os.path.dirname(custom_model_path), exist_ok=True)
+                
+                # Get the model URL but save to our custom path
+                model_url = f'https://storage.googleapis.com/mediapipe-assets/{model_path}'
+                st.info(f"Downloading model from {model_url} to {custom_model_path}")
+                
+                import urllib.request
+                with urllib.request.urlopen(model_url) as response, open(custom_model_path, 'wb') as f:
+                    shutil.copyfileobj(response, f)
+                    
+                return custom_model_path
+            except Exception as e:
+                st.error(f"Error downloading model: {e}")
+                raise e
+        
+        # Replace the original function with our patched version
+        download_utils.download_oss_model = patched_download
+        return True
+    except Exception as e:
+        st.error(f"Failed to patch MediaPipe download: {e}")
+        return False
 
 # Function to get accurate video dimensions using FFmpeg
 def get_video_info(video_path):
@@ -94,31 +140,55 @@ def get_dimensions_from_frame(video_path):
 @st.cache_resource
 def load_mediapipe():
     try:
-        # Create a temp dir for MediaPipe models if needed
-        model_dir = os.path.join(tempfile.gettempdir(), "mediapipe_models")
-        os.makedirs(model_dir, exist_ok=True)
+        # Patch MediaPipe download functionality
+        patch_success = patch_mediapipe_download()
+        if not patch_success:
+            st.warning("Could not patch MediaPipe download function. Will try direct initialization.")
         
-        # Set environment variables for MediaPipe
-        os.environ["MEDIAPIPE_RESOURCE_DIR"] = model_dir
-        
-        # Load MediaPipe components
+        # Load MediaPipe components with light model (less likely to cause issues)
         mp_pose = mp.solutions.pose
         pose = mp_pose.Pose(
             static_image_mode=False,
-            model_complexity=2,  # 2 = heavy model
-            enable_segmentation=False,  # Disable segmentation to avoid the error
+            model_complexity=1,  # Use medium model instead of heavy
+            enable_segmentation=False,
             min_detection_confidence=0.5,
             min_tracking_confidence=0.5
         )
         return pose, mp_pose, mp.solutions.drawing_utils, mp.solutions.drawing_styles
     except Exception as e:
-        st.error(f"Error loading MediaPipe: {e}")
-        st.info("If this error persists, please try a different video or check if MediaPipe is compatible with your system.")
-        raise e
+        # Try fallback to even lighter model if medium fails
+        try:
+            st.warning(f"Error loading medium model: {e}. Trying lighter model...")
+            mp_pose = mp.solutions.pose
+            pose = mp_pose.Pose(
+                static_image_mode=False,
+                model_complexity=0,  # Use lightest model
+                enable_segmentation=False,
+                min_detection_confidence=0.5,
+                min_tracking_confidence=0.5
+            )
+            return pose, mp_pose, mp.solutions.drawing_utils, mp.solutions.drawing_styles
+        except Exception as e2:
+            st.error(f"Error loading MediaPipe: {e2}")
+            st.error("MediaPipe initialization failed. This app may not work correctly in this environment.")
+            st.info("If this error persists, please try running the app locally instead of on Streamlit Cloud.")
+            # Return None values to allow the app to continue without MediaPipe functionality
+            return None, None, None, None
 
 # App header
 st.title("MediaPipe Pose Landmarker")
-st.markdown("Upload a video to detect and visualize pose landmarks using MediaPipe's heavy model.")
+st.markdown("Upload a video to detect and visualize pose landmarks using MediaPipe's model.")
+
+# Display Python and environment information
+with st.expander("Environment Information"):
+    st.code(f"""
+Python version: {sys.version}
+Temp directory: {TEMP_DIR}
+Model directory: {MODEL_DIR}
+Directory exists: {os.path.exists(MODEL_DIR)}
+Directory writable: {os.access(MODEL_DIR, os.W_OK)}
+Current working directory: {os.getcwd()}
+    """)
 
 # File uploader
 uploaded_file = st.file_uploader("Choose a video file", type=["mp4", "avi", "mov", "webm"])
@@ -169,6 +239,11 @@ if uploaded_file is not None:
         try:
             # Load MediaPipe
             pose, mp_pose, mp_drawing, mp_drawing_styles = load_mediapipe()
+            
+            # Check if MediaPipe loaded correctly
+            if pose is None:
+                st.error("MediaPipe components failed to load. Cannot process video with pose detection.")
+                st.stop()
             
             # Progress placeholder
             progress_text = st.empty()
@@ -434,7 +509,7 @@ if uploaded_file is not None:
 # Display info about the model
 with st.expander("About MediaPipe Pose Landmarker"):
     st.markdown("""
-    This application uses MediaPipe's Pose Landmarker with the heavy model to detect and visualize pose landmarks in videos.
+    This application uses MediaPipe's Pose Landmarker to detect and visualize pose landmarks in videos.
     
     The Pose Landmarker model detects 33 landmarks on a human body:
     - Face landmarks (nose, eyes, ears)
@@ -443,5 +518,5 @@ with st.expander("About MediaPipe Pose Landmarker"):
     - Hip, knee, and ankle landmarks
     - Hand and foot landmarks
     
-    The heavy model provides the most accurate landmark detection but may be slower than lighter models.
+    The application tries to use the best model available in the current environment.
     """)
