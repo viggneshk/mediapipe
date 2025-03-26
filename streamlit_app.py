@@ -242,6 +242,24 @@ if uploaded_file is not None:
         orig_height = manual_height
         st.info(f"Using manual dimensions: {orig_width}×{orig_height}")
     
+    # Speed control option
+    st.write("Select video playback speed:")
+    speed_options = {
+        "Normal (1.0x)": 1.0,
+        "Slow (0.75x)": 0.75,
+        "Slower (0.5x)": 0.5,
+        "Slowest (0.25x)": 0.25
+    }
+    selected_speed = st.selectbox(
+        "Playback Speed",
+        options=list(speed_options.keys()),
+        index=0
+    )
+    speed_factor = speed_options[selected_speed]
+    
+    if speed_factor != 1.0:
+        st.info(f"Video will be processed at {speed_factor}x speed. This will help with tracking fast movements.")
+    
     # Process button
     if st.button("Process Video"):
         try:
@@ -266,7 +284,12 @@ if uploaded_file is not None:
             # Get video properties as read by OpenCV (may differ from actual)
             cv_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
             cv_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-            fps = orig_fps if orig_fps and orig_fps > 0 else cap.get(cv2.CAP_PROP_FPS)
+            original_fps = orig_fps if orig_fps and orig_fps > 0 else cap.get(cv2.CAP_PROP_FPS)
+            
+            # Apply speed factor to FPS for output
+            fps = original_fps * speed_factor
+            st.info(f"Original FPS: {original_fps:.2f}, Output FPS: {fps:.2f}")
+            
             total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
             
             if cv_width != orig_width or cv_height != orig_height:
@@ -301,15 +324,64 @@ if uploaded_file is not None:
             else:
                 preserve_source_aspect = False
             
-            while cap.isOpened():
+            # Frame skipping variables for slow motion
+            frame_indices = []
+            if speed_factor == 1.0:
+                # Normal speed: use all frames
+                while frame_count < total_frames:
+                    frame_indices.append(frame_count)
+                    frame_count += 1
+            else:
+                # For slow motion: duplicate frames
+                target_frame_count = int(total_frames / speed_factor)
+                for i in range(target_frame_count):
+                    # Calculate which original frame to use
+                    original_frame_idx = min(int(i * speed_factor), total_frames - 1)
+                    frame_indices.append(original_frame_idx)
+            
+            # Reset frame_count for actual processing
+            frame_count = 0
+            processed_count = 0
+            
+            # Skip to beginning of video
+            cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+            
+            # Dictionary to store frames for slow motion
+            frames_cache = {}
+            
+            # Process all required frames
+            for idx, frame_idx in enumerate(frame_indices):
+                # If we've already processed this frame, use it from cache
+                if frame_idx in frames_cache:
+                    # Save the cached frame with new index
+                    frame_filename = os.path.join(frames_dir, f"frame_{processed_count:06d}.png")
+                    cv2.imwrite(frame_filename, frames_cache[frame_idx])
+                    processed_frames.append(frame_filename)
+                    processed_count += 1
+                    
+                    # Update progress
+                    progress = (idx + 1) / len(frame_indices)
+                    progress_bar.progress(progress)
+                    progress_text.text(f"Processing frame {idx+1}/{len(frame_indices)} (reusing frame {frame_idx})")
+                    continue
+                
+                # Seek to the correct frame if not the next one
+                if frame_idx != frame_count:
+                    cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
+                    frame_count = frame_idx
+                
+                # Read the frame
                 ret, frame = cap.read()
                 if not ret:
                     break
-                    
+                
                 frame_count += 1
-                progress = frame_count / total_frames
+                processed_count += 1
+                
+                # Update progress
+                progress = (idx + 1) / len(frame_indices)
                 progress_bar.progress(progress)
-                progress_text.text(f"Processing frame {frame_count}/{total_frames}")
+                progress_text.text(f"Processing frame {idx+1}/{len(frame_indices)} (original frame {frame_idx})")
                 
                 # Convert the BGR image to RGB for MediaPipe
                 image_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -373,9 +445,13 @@ if uploaded_file is not None:
                     canvas = resized
                 
                 # Save the frame with the exact target dimensions
-                frame_filename = os.path.join(frames_dir, f"frame_{frame_count:06d}.png")
+                frame_filename = os.path.join(frames_dir, f"frame_{idx:06d}.png")
                 cv2.imwrite(frame_filename, canvas)
                 processed_frames.append(frame_filename)
+                
+                # Store in cache for potential reuse (for slow motion)
+                if speed_factor < 1.0:
+                    frames_cache[frame_idx] = canvas.copy()
             
             # Release resources
             cap.release()
@@ -394,7 +470,7 @@ if uploaded_file is not None:
             out = cv2.VideoWriter(
                 temp_output_path, 
                 cv2.VideoWriter_fourcc(*'mp4v'), 
-                fps, 
+                fps,  # Use the speed-adjusted fps 
                 (orig_width, orig_height)
             )
             
@@ -417,9 +493,10 @@ if uploaded_file is not None:
             check_cap = cv2.VideoCapture(output_path)
             out_width = int(check_cap.get(cv2.CAP_PROP_FRAME_WIDTH))
             out_height = int(check_cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+            out_fps = check_cap.get(cv2.CAP_PROP_FPS)
             check_cap.release()
             
-            st.info(f"Processed video dimensions: {out_width}×{out_height}")
+            st.info(f"Processed video dimensions: {out_width}×{out_height}, FPS: {out_fps:.2f}")
             
             # Check if dimensions exactly match
             if out_width != orig_width or out_height != orig_height:
@@ -431,7 +508,10 @@ if uploaded_file is not None:
             progress_bar.empty()
             
             # Display success message
-            st.success("Video processing complete!")
+            if speed_factor < 1.0:
+                st.success(f"Video processing complete! Video has been slowed to {speed_factor}x speed.")
+            else:
+                st.success("Video processing complete!")
             
             # Check if output file exists and has content
             if os.path.exists(output_path) and os.path.getsize(output_path) > 0:
@@ -440,10 +520,11 @@ if uploaded_file is not None:
                 
                 # Download button
                 with open(output_path, 'rb') as file:
+                    download_filename = f"processed_pose_video_{speed_factor}x.mp4" if speed_factor < 1.0 else "processed_pose_video.mp4"
                     st.download_button(
                         label="Download Processed Video",
                         data=file,
-                        file_name=f"processed_pose_video.mp4",
+                        file_name=download_filename,
                         mime="video/mp4"
                     )
             else:
@@ -492,4 +573,6 @@ with st.expander("About MediaPipe Pose Landmarker"):
     - Hand and foot landmarks
     
     The application tries to use the best model available in the current environment.
+    
+    You can also slow down videos to better analyze fast movements.
     """)
